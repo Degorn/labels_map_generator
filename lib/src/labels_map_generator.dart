@@ -4,11 +4,17 @@ import 'dart:typed_data';
 import 'package:image/image.dart';
 
 class LabelMapResult {
-  const LabelMapResult({required this.imageWidth, required this.imageHeight, required this.labels});
+  const LabelMapResult({
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.labels,
+    required this.contours,
+  });
 
   final int imageWidth;
   final int imageHeight;
   final Uint32List labels;
+  final Map<int, List<(int, int)>> contours;
 }
 
 class LabelMapGenerator {
@@ -28,7 +34,7 @@ class LabelMapGenerator {
     return fromImage(image);
   }
 
-  LabelMapResult fromImage(Image image) {
+  LabelMapResult fromImage(Image image, {int dilateIterations = 1}) {
     final width = image.width;
     final height = image.height;
     final pixels = image.buffer.asUint32List();
@@ -36,9 +42,11 @@ class LabelMapGenerator {
     final labels = Uint32List(width * height);
     var regionId = contourZoneId + 1;
 
+    final contours = <int, List<(int, int)>>{};
+
     for (var idx = 0; idx < pixels.length; idx++) {
       if (labels[idx] == 0 && !_isContourColor(pixels[idx])) {
-        _floodFill(
+        final (contour, _) = _floodFill(
           pixels: pixels,
           labels: labels,
           width: width,
@@ -46,14 +54,22 @@ class LabelMapGenerator {
           startIdx: idx,
           regionId: regionId,
         );
+        contours[regionId] = contour;
         regionId++;
       }
     }
 
-    return LabelMapResult(imageWidth: width, imageHeight: height, labels: labels);
+    _applyDilate(labels, width, height, dilateIterations);
+
+    return LabelMapResult(
+      imageWidth: width,
+      imageHeight: height,
+      labels: labels,
+      contours: contours,
+    );
   }
 
-  List<int> _floodFill({
+  (List<(int, int)>, List<int>) _floodFill({
     required Uint32List pixels,
     required Uint32List labels,
     required int width,
@@ -63,9 +79,12 @@ class LabelMapGenerator {
   }) {
     final stack = <int>[startIdx];
     final zonePixels = <int>[];
+    final contour = <(int, int)>[];
 
     while (stack.isNotEmpty) {
       final idx = stack.removeLast();
+
+      if (labels[idx] != 0) continue;
 
       labels[idx] = regionId;
       zonePixels.add(idx);
@@ -73,25 +92,39 @@ class LabelMapGenerator {
       final x = idx % width;
       final y = idx ~/ width;
 
-      if (x > 0) {
-        final nIdx = idx - 1;
-        if (labels[nIdx] == 0 && !_isContourColor(pixels[nIdx])) stack.add(nIdx);
+      var isContourPixel = false;
+
+      for (final offset in [-1, 1, -width, width]) {
+        final nx = x + (offset == -1 || offset == 1 ? offset : 0);
+        final ny = y + (offset == -width || offset == width ? offset ~/ width : 0);
+
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+          isContourPixel = true;
+          continue;
+        }
+
+        final nIdx = idx + offset;
+
+        if (labels[nIdx] == 0 && !_isContourColor(pixels[nIdx])) {
+          stack.add(nIdx);
+        } else if (labels[nIdx] == 0 || _isContourColor(pixels[nIdx])) {
+          isContourPixel = true;
+        }
       }
-      if (x < width - 1) {
-        final nIdx = idx + 1;
-        if (labels[nIdx] == 0 && !_isContourColor(pixels[nIdx])) stack.add(nIdx);
-      }
-      if (y > 0) {
-        final nIdx = idx - width;
-        if (labels[nIdx] == 0 && !_isContourColor(pixels[nIdx])) stack.add(nIdx);
-      }
-      if (y < height - 1) {
-        final nIdx = idx + width;
-        if (labels[nIdx] == 0 && !_isContourColor(pixels[nIdx])) stack.add(nIdx);
+
+      if (isContourPixel) {
+        contour.add((x, y));
       }
     }
 
-    return zonePixels;
+    if (zonePixels.length < 21) {
+      for (final idx in zonePixels) {
+        labels[idx] = 0;
+      }
+      return (<(int, int)>[], <int>[]);
+    }
+
+    return (contour, zonePixels);
   }
 
   bool _isContourColor(int color) {
@@ -100,5 +133,33 @@ class LabelMapGenerator {
     final g = (color >> 8) & 0xFF;
     final b = color & 0xFF;
     return a > alphaThreshold && r < 10 && g < 10 && b < 10;
+  }
+
+  void _applyDilate(Uint32List labels, int width, int height, int iterations) {
+    for (var step = 0; step < iterations; step++) {
+      final tempLabels = Uint32List.fromList(labels);
+
+      for (var y = 0; y < height; y++) {
+        for (var x = 0; x < width; x++) {
+          final idx = y * width + x;
+          if (labels[idx] != 0) continue;
+
+          for (var dy = -1; dy <= 1; dy++) {
+            for (var dx = -1; dx <= 1; dx++) {
+              final nx = x + dx;
+              final ny = y + dy;
+              if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                final nIdx = ny * width + nx;
+                if (tempLabels[nIdx] != 0) {
+                  labels[idx] = tempLabels[nIdx];
+                  break;
+                }
+              }
+            }
+            if (labels[idx] != 0) break;
+          }
+        }
+      }
+    }
   }
 }
