@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -18,7 +19,7 @@ class LabelMapResult {
 }
 
 class LabelMapGenerator {
-  const LabelMapGenerator({this.alphaThreshold = 180, this.contourZoneId = 0})
+  LabelMapGenerator({this.alphaThreshold = 180, this.contourZoneId = 0})
     : assert(
         alphaThreshold >= 0 && alphaThreshold <= 255,
         'alphaThreshold is $alphaThreshold, but must be between 0 and 255.',
@@ -26,6 +27,15 @@ class LabelMapGenerator {
 
   final int alphaThreshold;
   final int contourZoneId;
+
+  final _progressController = StreamController<double>.broadcast(sync: true);
+  Stream<double> get progress => _progressController.stream;
+
+  void dispose() {
+    if (!_progressController.isClosed) {
+      _progressController.close();
+    }
+  }
 
   LabelMapResult? fromFile(String path) {
     final bytes = File(path).readAsBytesSync();
@@ -44,6 +54,11 @@ class LabelMapGenerator {
 
     final contours = <int, List<(int, int)>>{};
 
+    final total = width * height;
+    var checked = 0;
+
+    _progressController.add(0.0);
+
     for (var idx = 0; idx < pixels.length; idx++) {
       if (labels[idx] == 0 && !_isContourColor(pixels[idx])) {
         final (contour, _) = _floodFill(
@@ -53,11 +68,24 @@ class LabelMapGenerator {
           height: height,
           startIdx: idx,
           regionId: regionId,
+          onPixelVisited: () {
+            checked++;
+            if (checked % 100 == 0 || checked == total) {
+              _progressController.add(checked / total);
+            }
+          },
         );
         contours[regionId] = contour;
         regionId++;
+      } else {
+        checked++;
+        if (checked % 100 == 0 || checked == total) {
+          _progressController.add(checked / total);
+        }
       }
     }
+
+    _progressController.add(1.0);
 
     _applyDilate(labels, width, height, dilateIterations);
 
@@ -76,6 +104,7 @@ class LabelMapGenerator {
     required int height,
     required int startIdx,
     required int regionId,
+    void Function()? onPixelVisited,
   }) {
     final stack = <int>[startIdx];
     final zonePixels = <int>[];
@@ -85,6 +114,9 @@ class LabelMapGenerator {
       final idx = stack.removeLast();
 
       if (labels[idx] != 0) continue;
+
+      // Notify that we're about to label this pixel (counts toward progress).
+      onPixelVisited?.call();
 
       labels[idx] = regionId;
       zonePixels.add(idx);
