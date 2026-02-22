@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:image/image.dart';
+import 'package:labels_map_generator/src/image_processing.dart';
 
 abstract class LabelsMapVisualizer {
   static void visualizeLabelMapMaskWithOrigin({
@@ -23,13 +24,7 @@ abstract class LabelsMapVisualizer {
     for (var i = 0; i < labels.length; i++) {
       final id = labels[i];
       final color = originalImage[i];
-
-      final a = (color >> 24) & 0xFF;
-      final r = (color >> 16) & 0xFF;
-      final g = (color >> 8) & 0xFF;
-      final b = color & 0xFF;
-
-      final isContour = a > 180 && r < 10 && g < 10 && b < 10;
+      final isContour = ImageProcessingUtils.isContour(color);
 
       if (randomizeColors && !isContour) {
         final randomColor = _encodeRandomized(id);
